@@ -1,10 +1,8 @@
-import random
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from transformers import BertModel, BertConfig, BertTokenizer
+from transformers import BertModel, BertConfig
 
 
 class ESimcseModel(nn.Module):
@@ -39,7 +37,7 @@ class ESimcseModel(nn.Module):
 class MomentumEncoder(ESimcseModel):
     """ MomentumEncoder """
 
-    def __init__(self, pretrained_model, pooling):
+    def __init__(self, pretrained_model, pooling ): # dropout = 0 !!，外面加 eval()
         super(MomentumEncoder, self).__init__(pretrained_model, pooling)
 
 
@@ -52,6 +50,9 @@ class MultiNegativeRankingLoss(nn.Module):
     def multi_negative_ranking_loss(self, embed_src, embed_pos, embed_neg, scale=20.0):
         '''
         scale is a temperature parameter
+        
+        embed_src.shape[0] == embed_pos[0]
+        每个样本 embed_src i ，取 embed_pos[i] 作为正样本，embed_neg作为所有负样本
         '''
 
         if embed_neg is not None:

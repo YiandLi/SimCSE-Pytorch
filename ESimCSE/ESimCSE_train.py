@@ -1,19 +1,16 @@
 import argparse
-import sys
-
-from tqdm import tqdm
-from loguru import logger
 
 import numpy as np
-from scipy.stats import spearmanr
-from transformers import BertModel, BertConfig, BertTokenizer
-
 import torch
 import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader
+from loguru import logger
+from scipy.stats import spearmanr
+from torch.utils.data import DataLoader
+from tqdm import tqdm
+from transformers import BertTokenizer
 
-from ESimCSE_dataloader import TrainDataset, TestDataset, CollateFunc, load_sts_data, load_sts_data_unsup
 from ESimCSE_Model import ESimcseModel, MomentumEncoder, MultiNegativeRankingLoss
+from ESimCSE_dataloader import TrainDataset, TestDataset, CollateFunc, load_sts_data, load_sts_data_unsup
 
 
 def get_bert_input(source, device):
@@ -30,28 +27,29 @@ def train(model, momentum_encoder, train_dl, dev_dl, optimizer, loss_func, devic
         # 维度转换 [batch, 2, seq_len] -> [batch * 2, sql_len]
         input_ids_src, attention_mask_src, token_type_ids_src = get_bert_input(batch_src_source, device)
         input_ids_pos, attention_mask_pos, token_type_ids_pos = get_bert_input(batch_pos_source, device)
-
+        
         neg_out = None
         if batch_neg_source:
             input_ids_neg, attention_mask_neg, token_type_ids_neg = get_bert_input(batch_neg_source, device)
             neg_out = momentum_encoder(input_ids_neg, attention_mask_neg, token_type_ids_neg)
+            neg_out = neg_out.detach()  # 它不产生 loss  !!
             # print(neg_out.shape)
-
+        
         src_out = model(input_ids_src, attention_mask_src, token_type_ids_src)
         pos_out = model(input_ids_pos, attention_mask_pos, token_type_ids_pos)
-
+        
         loss = loss_func(src_out, pos_out, neg_out)
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
-
+        
         #  Momentum Contrast Encoder Update
         for encoder_param, moco_encoder_param in zip(model.parameters(), momentum_encoder.parameters()):
             # print("--", moco_encoder_param.data.shape, encoder_param.data.shape)
             moco_encoder_param.data = gamma \
                                       * moco_encoder_param.data \
                                       + (1. - gamma) * encoder_param.data
-
+        
         if batch_idx % 5 == 0:
             logger.info(f'loss: {loss.item():.4f}')
             corrcoef = evaluation(model, dev_dl, device)
@@ -63,7 +61,6 @@ def train(model, momentum_encoder, train_dl, dev_dl, optimizer, loss_func, devic
 
 
 def evaluation(model, dataloader, device):
-
     model.eval()
     sim_tensor = torch.tensor([], device=device)
     label_array = np.array([])
@@ -89,36 +86,37 @@ def evaluation(model, dataloader, device):
 
 def main(args):
     args.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-
+    
     train_path_sp = args.data_path + "cnsd-sts-train.txt"
     train_path_unsp = args.data_path + "cnsd-sts-train_unsup.txt"
     dev_path_sp = args.data_path + "cnsd-sts-dev.txt"
     test_path_sp = args.data_path + "cnsd-sts-test.txt"
     # pretrain_model_path = "/data/Learn_Project/Backup_Data/macbert_chinese_pretrained"
-
+    
     test_data_source = load_sts_data(test_path_sp)
     tokenizer = BertTokenizer.from_pretrained(args.pretrain_model_path)
-
+    
     train_data_source = load_sts_data_unsup(train_path_unsp)
     train_sents = [data[0] for data in train_data_source]
     train_dataset = TrainDataset(train_sents)
-
+    
     train_call_func = CollateFunc(tokenizer, max_len=args.max_length, q_size=args.q_size, dup_rate=args.dup_rate)
     train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=12,
                                   collate_fn=train_call_func)
-
+    
     test_dataset = TestDataset(test_data_source, tokenizer, max_len=args.max_length)
     test_dataloader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=True, num_workers=12)
-
+    
     assert args.pooler in ['cls', "pooler", "last-avg", "first-last-avg"]
     model = ESimcseModel(pretrained_model=args.pretrain_model_path, pooling=args.pooler, dropout=args.dropout).to(
         args.device)
     momentum_encoder = MomentumEncoder(args.pretrain_model_path, args.pooler).to(args.device)
-
+    momentum_encoder.eval()  # dropout = 0.0
+    
     ESimCSELoss = MultiNegativeRankingLoss()
     esimcse_loss = ESimCSELoss.multi_negative_ranking_loss
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
-
+    
     train(model, momentum_encoder,
           train_dataloader, test_dataloader,
           optimizer, esimcse_loss,
@@ -138,10 +136,10 @@ if __name__ == "__main__":
     parser.add_argument("--max_length", type=int, default=50, help="max length of input sentences")
     parser.add_argument("--data_path", type=str, default="../data/STS-B/")
     parser.add_argument("--pretrain_model_path", type=str,
-                        default="/data/Learn_Project/Backup_Data/bert_chinese")
-    parser.add_argument("--pooler", type=str, choices=['cls', "pooler", "last-avg", "first-last-avg"],
+                        default="bert-base-chinese")
+    parser.add_argument("--cls", type=str, choices=['cls', "pooler", "last-avg", "first-last-avg"],
                         default='first-last-avg', help='which pooler to use')
-
+    
     args = parser.parse_args()
     logger.add("../log/train.log")
     logger.info("run run run")
